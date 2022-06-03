@@ -1,0 +1,457 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN"
+   "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"> 
+
+<html>
+<head>
+  <title>Traffic Callout Scenarios</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com"> 
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin> 
+<link href="https://fonts.googleapis.com/css2?family=VT323&display=swap" rel="stylesheet">
+</head>
+
+<body>
+  <canvas id="scope">
+    <strong>Turn on JavaScript...</strong>
+  </canvas>
+
+  <script>
+    var c = document.getElementById("scope");
+    c.width = window.innerWidth;
+    c.height = window.innerHeight;
+    var ctx = c.getContext("2d");
+
+    ctx.font = "18px VT323";
+
+    var aspect = c.width / c.height;
+    var xMax = 10;
+    var yMax = xMax / aspect;
+    var airspaceRadius = 6;
+
+    // TODO: draw some fake waypoints
+    // TODO: dont' crash at the end
+    // TODO: helicopters
+    // TODO: untracked a/c: asterisk
+
+    // transform from 'nm space' to pixel coordinates
+    function toPixel(p) {
+        return [ (p[0] + xMax) / (2 * xMax) * c.width,
+                 (p[1] + yMax) / (2 * yMax) * c.height ];
+    }
+    function drawx(p, d, color) {
+        p = toPixel(p);
+        ctx.beginPath();
+        ctx.moveTo(p[0]-d, p[1]-d);
+        ctx.lineTo(p[0]+d, p[1]+d);
+        ctx.stroke();
+        ctx.moveTo(p[0]+d, p[1]-d);
+        ctx.lineTo(p[0]-d, p[1]+d);
+        ctx.strokeStyle = color;
+        ctx.stroke();
+    }
+
+    var destinations = [ 'KJFK', 'KSFO', 'KSAN', 'KLAX', 'KHVN', 'KLGA',
+                         'KEWR', 'KMSP', 'KORD', 'KFRG', 'KPHL',
+                         'KTEB', 'KCDW', 'KMMU', 'KHPN', 'KISP', 'KBDR',
+                         'KFOK', 'KHTO', 'KITH', 'KMDT', 'KIAD', 'KBNA',
+                         'KBWI', 'KFLL', 'KMCO', 'KMEM', 'KMSY', 'KPBI',
+                         'KPIT', 'KPVD' ];
+
+    var vfraircraft = ['BE99', 'C152', 'C172', 'P28A', 'P28B' ];
+    var heavyaircraft = [ "A310", 'A332', 'A333', 'A338', 'A343', 'A359', 
+                          'B741', 'B742', 'B744', 'B748', 'B778', 'B779',
+                          'B788', 'B789', 'CONC', 'DC11', 'MD11'];
+    var aircraft = [ 'A318', 'A319', 'A320', 'A321', 'B38M', 'B37M',
+                     'B732', 'B733', 'B735', 'B734', 'B736', 'B753',
+                     'CRJ9', 'CRJ8', 'CRJ2', 'DH8D', 'E195', 'E170', 
+                     'MD81', 'MD82', 'MD88' ];
+                         
+    var callsigns = [ "AAL", "DAL", "BAW", "UAL", "NKS", "AWE", "CPA",
+                      "DLH", "JIA", "PDT", "RPA", "JBU", "WJA", "ACA",
+                      "EDV", "FFT" ];
+
+    function rand(low, high) {
+        return low + (high - low) * Math.random();
+    }
+
+    function randomPlane() {
+        var plane = { 'dest': destinations[Math.floor(Math.random() * destinations.length)],
+                      'draw': function() {
+                          // draw x and trails
+                          let step = Math.floor(time / 5);
+                          for (let i = step - 5; i < step; ++i) {
+                              drawx(this.history[i], 3, "#00a000");
+                          }
+                          drawx(this.history[step], 3, "#00ff00");
+
+                          // origin for drawing text. default for
+                          var org = [ ];
+                          var heading = this.history[step][4];
+                          if (heading >= 45 && heading < 135)
+                              org = [ 12, -3 ]; // right
+                          else if (heading >= 135 && heading < 225)
+                              org = [ -5, 22 ]; // below
+                          else if (heading >= 225 && heading < 315)
+                              org = [ -70, -3 ]; // left
+                          else
+                              org = [ -5, -30 ]; // above
+
+                          let p = toPixel(this.history[step]);
+                          ctx.fillStyle = "#00b000";
+                          ctx.fillText(this.callsign, p[0]+org[0], p[1]+org[1]);
+
+                          org[1] += 15; // newline
+                          if (time % 2 == 0) {
+                              // altitude / speed
+                              let text = ("000" +
+                                          Math.round(this.history[step][2])).slice(-3);
+                              text = text.concat(" ", Math.round(this.history[step][3] / 10).toString());
+                              if (this.vfr)
+                                  text = text.concat("V");
+                              ctx.fillText(text, p[0]+org[0], p[1]+org[1]);
+                          } else {
+                              // dest / ac type
+                              let text = this.dest.concat(" ", this.ac);
+                              ctx.fillText(text, p[0]+org[0], p[1]+org[1]);
+                          }
+
+                          // draw conflict circles
+                          if (//inAirspace(this.history[step]) &&
+                              allPlanes.some(plane2 => plane2.callsign != plane.callsign &&
+                                             pointConflicts(plane.history[step],
+                                                            plane2.history[step]))) {
+                              ctx.beginPath();
+                              var r = 3. / (2 * xMax) * window.innerWidth;
+                              ctx.arc(p[0], p[1], r, 0, 2 * Math.PI, false);
+                              ctx.strokeStyle = '#800000';
+                              ctx.stroke();
+                          }
+                      }
+                    };
+
+        // Callsign and a/c type
+        var c = "";
+        var speed, dspeed;
+        function digit() { return Math.floor(Math.random() * 10).toString(); }
+        if (Math.random() < .3) {
+            plane.vfr = true;
+            plane.ac = vfraircraft[Math.floor(Math.random() * vfraircraft.length)];
+            speed = rand(80, 150);
+            dspeed = rand(-3, 3);
+
+            // VFR
+            c = "N";
+            c = c.concat(digit());
+            c = c.concat(digit());
+            c = c.concat(digit());
+
+            var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+            c = c.concat(chars[Math.floor(Math.random() * chars.length)]);
+            c = c.concat(chars[Math.floor(Math.random() * chars.length)]);
+        } else {
+            plane.vfr = false;
+            dspeed = rand(-3, 3);
+
+            c = callsigns[Math.floor(Math.random() * callsigns.length)];
+            c = c.concat(digit());
+            if (Math.random() < .85) {
+                c = c.concat(Math.floor(Math.random() * 10).toString());
+                if (Math.random() < .5) {
+                    c = c.concat(Math.floor(Math.random() * 10).toString());
+                    if (Math.random() < .5) {
+                        c = c.concat(Math.floor(Math.random() * 10).toString());
+                    }
+                }
+            }
+            if (c.length <= 6 && Math.random() < .5) { // don't make 4-digit flight numbers heavy
+                c = c.concat("/H");
+                plane.ac = heavyaircraft[Math.floor(Math.random() *
+                                                    heavyaircraft.length)];
+                speed = rand(200, 250);
+            } else {
+                plane.ac = aircraft[Math.floor(Math.random() * aircraft.length)];
+                speed = rand(140, 250);
+            }
+        }
+        plane.callsign = c;
+
+        // Simulate a flight path
+        let altChanging = Math.random() < .25;
+        let altChangeRate = rand(0.1, 2);
+        let alt = 10 * Math.floor(rand(3, 10));
+        let altTarget = 10 * Math.floor(rand(3, 10));
+
+        let heading = rand(0, 360);
+        let headingTarget = heading + rand(-80, 80);
+        let headingChanging = Math.random() < .5;
+        let headingChangeRate = rand(1, 10);
+
+        /*
+        // Everyone starts outside our airspace
+        while (true) {
+            pt = [ rand(-1.25 * xMax, 1.25 * xMax),
+                   rand(-1.25 * yMax, 1.25 * yMax), alt, speed, heading ];
+            if (!inAirspace(pt))
+                break;
+        }
+        */
+        // Start inside
+        let pt = [ rand(-.75 * xMax, .75 * xMax),
+                   rand(-.75 * yMax, .75 * yMax), alt, speed, heading ];
+
+        // x, y, alt, speed
+        plane.history = [ pt ];
+        for (let i = 0; i < 30; ++i) {
+            // 5s time step.
+            var dist = speed * 5 / 3600;
+            var ang = heading * Math.PI / 180; // to radians
+
+            let newspeed = speed + dspeed;
+            let newheading = heading;
+            if (heading != headingTarget) {
+                if (!headingChanging)
+                    altChanging = Math.random() < .05;
+                if (headingChanging) {
+                    if (heading < headingTarget) {
+                        newheading = heading + headingChangeRate;
+                        if (newheading > headingTarget) newheading = headingTarget;
+                    }
+                    else if (newheading > headingTarget) {
+                        newheading = heading - headingChangeRate;
+                        if (newheading < headingTarget) newheading = headingTarget;
+                    }
+                }
+            }
+
+            let newalt = alt;
+            if (alt != altTarget) {
+                if (!altChanging)
+                    altChanging = Math.random() < .05;
+                if (altChanging) {
+                    if (alt < altTarget) {
+                        newalt = alt + altChangeRate;
+                        if (newalt > altTarget) newalt = altTarget;
+                    }
+                    else if (newalt > altTarget) {
+                        newalt = alt - altChangeRate;
+                        if (newalt < altTarget) newalt = altTarget;
+                    }
+                }
+            }
+
+            let newp = [ pt[0] + Math.sin(ang) * dist,
+                         pt[1] - Math.cos(ang) * dist,
+                         newalt, newspeed, newheading ];
+            plane.history.push(newp);
+            pt = newp;
+
+            speed = newspeed;
+            heading = newheading;
+            alt = newalt;
+
+            if (alt < 5) { alt = 5;
+                           dalt = Math.abs(dalt); }
+            if (plane.vfr) {
+                if (speed < 80) { speed = 80;
+                                  dspeed = Math.abs(dspeed); }
+                else if (speed > 150) { speed = 150;
+                                        dspeed = -Math.abs(dspeed); }
+            } else {
+                if (speed < 140) { speed = 140;
+                                   dspeed = Math.abs(dspeed); }
+                else if (speed > 250) { speed = 250;
+                                        dspeed = -Math.abs(dspeed); }
+            }
+        }
+
+        return plane;
+    }
+
+    function inAirspace(p) {
+        return (p[0] * p[0] + p[1] * p[1]) < airspaceRadius * airspaceRadius;
+    }
+    function entersAirspace(plane) {
+        return plane.history.some(h => inAirspace(h));
+    }
+
+    function pointConflicts(a, b) {
+        if (Math.abs(a[2] - b[2]) > 10)  
+            return false; // alt different enough
+        if (a[0] < -xMax || a[0] > xMax || a[1] < -yMax || a[1] > yMax || 
+            b[0] < -xMax || b[0] > xMax || b[1] < -yMax || b[1] > yMax)
+            return false; // offscreen
+        // check 3 miles
+        return Math.sqrt((a[0]-b[0])*(a[0]-b[0]) +
+                         (a[1]-b[1])*(a[1]-b[1])) < 3;
+    }
+    function pathConflicts(a, b, start) {
+        for (let i = 5; i < a.history.length; ++i)
+            if (pointConflicts(a.history[i], b.history[i])) {
+                console.log(i + " @ " + a.history[i] + " " + b.history[i]);
+                return true;
+            }
+        return false;
+    }
+
+    // construct a conflict
+/*    var firstPlane, conflictStep;
+    var conflictStep;
+    while (true) {
+        firstPlane = randomPlane();
+        conflictStep = Math.floor(rand(20, firstPlane.history.length - 20));
+        if (inAirspace(firstPlane.history[conflictStep]))
+            break;
+    }
+    var allPlanes = [ firstPlane ];
+
+    var badPlane = randomPlane();
+    console.log("conflict at " + conflictStep);
+    var dx = allPlanes[0].history[conflictStep][0] - badPlane.history[conflictStep][0];
+    var dy = allPlanes[0].history[conflictStep][1] -
+        badPlane.history[conflictStep][1];
+    var dalt = allPlanes[0].history[conflictStep][2] -
+        badPlane.history[conflictStep][2] + rand(-5,5) / 10;
+    badPlane.history = badPlane.history.map(h => [ h[0]+dx, h[1]+dy,
+                                                   h[2]+dalt, h[3] ]);
+    allPlanes.push(badPlane);
+
+    // add some additional non conflicting planes
+    while (allPlanes.length < 15) {
+        var newPlane = randomPlane();
+        if (entersAirspace(newPlane) &&
+            !allPlanes.some(plane => pathConflicts(newPlane, plane)))
+            allPlanes.push(newPlane);
+    }
+    console.log("Got planes = ", allPlanes.length);
+*/
+
+    var allPlanes = [ randomPlane() ];
+    var foundConflict = false;
+    const wantedPlanes = 5;
+    while (allPlanes.length < wantedPlanes) {
+        var newPlane = randomPlane();
+        if (!entersAirspace(newPlane))
+            continue;
+
+        // Want to be at least 1 mile apart at the first time we will draw
+        // (step 5)
+        if (allPlanes.some(p => ((p.history[5][0] - newPlane.history[5][0]) *
+                                 (p.history[5][0] - newPlane.history[5][0])) +
+                                 ((p.history[5][0] - newPlane.history[5][0]) *
+                                  (p.history[5][0] - newPlane.history[5][0])) < 1))
+            continue;
+
+        // Want no conflicts for the first 10 steps
+        var conflicts = false;
+        for (let i = 0; i < 10; ++i)
+            if (allPlanes.some(plane => pointConflicts(plane.history[i],
+                                                       newPlane.history[i]))) {
+                conflicts = true;
+                break;
+            }
+        if (conflicts)
+            continue;
+
+        // Do want a conflict at least 10 steps in
+        for (let i = 10; i < newPlane.history.length; ++i) {
+            if (allPlanes.some(plane => pointConflicts(plane.history[i],
+                                                       newPlane.history[i]))) {
+                conflicts = true;
+                break;
+            }
+        }
+
+        if (conflicts) {
+            if (foundConflict) // only want one
+                continue;
+            foundConflict = true;
+        }
+        if (!conflicts) {
+            if (!foundConflict && allPlanes.length == wantedPlanes - 1) // save last spot for a conflict
+                continue;
+        }
+
+        allPlanes.push(newPlane);
+    }
+
+    function randomRunway() {
+        var ang = rand(0, 180) * Math.PI / 180; // [0,180] for centerlines hack
+        var len = rand(1, 2);
+        var p0 = [ rand(-0.5, 0.5), rand(-0.5, 0.5) ];
+        var p1 = [ p0[0] + len * Math.sin(ang), p0[1] + len * Math.cos(ang)
+                 ];
+        var result = [ { 'color': "#808080", 'start': toPixel(p0), 'end':
+                         toPixel(p1), 'width': 3 } ];
+        // centerlines
+        var delta = [ Math.sin(ang), Math.cos(ang) ];
+        for (let i = 1; i <= 15; i += 2) {
+            var start = [ p0[0] - i * delta[0], p0[1] - i * delta[1] ];
+            var end = [ p0[0] - (i+1) * delta[0], p0[1] - (i+1) * delta[1] ];
+            var dashes = [ { 'color': "#004000", 'start': toPixel(start), 'end':
+                             toPixel(end), 'width': 1 } ];
+            result = result.concat(dashes);
+
+            start = [ p1[0] + i * delta[0], p1[1] + i * delta[1] ];
+            end = [ p1[0] + (i+1) * delta[0], p1[1] + (i+1) * delta[1] ];
+            dashes = [ { 'color': "#004000", 'start': toPixel(start), 'end':
+                         toPixel(end), 'width': 1 } ];
+            result = result.concat(dashes);
+        }
+        return result;
+    }
+
+    // make some random runways and centerlines
+    allLines = [ ];
+    allLines = allLines.concat(randomRunway());
+    allLines = allLines.concat(randomRunway());
+
+    let time = 25;  // so we have some history for blips
+
+    function redraw() {
+        ctx.fillStyle="#101010";
+        ctx.fillRect(0, 0, c.width, c.height);
+
+        // runways et al
+        allLines.map(function (line) {
+            ctx.beginPath();
+            ctx.strokeStyle = line.color;
+            ctx.lineWidth = line.width;
+            ctx.moveTo(line.start[0], line.start[1]);
+            ctx.lineTo(line.end[0], line.end[1]);
+            ctx.stroke();
+        });
+        ctx.lineWidth = 1;
+
+        // range ring: 10 miles
+        /*
+        ctx.beginPath();
+        var r = airspaceRadius / (2 * xMax) * window.innerWidth;
+        let p = toPixel([0, 0]);
+        ctx.arc(p[0], p[1], r, 0, 2 * Math.PI, false);
+        ctx.strokeStyle = '#00c000';
+        ctx.stroke();
+        */
+        allPlanes.map(plane => plane.draw(time));
+
+        ++time;
+
+        if (Math.floor(time / 5) < allPlanes[0].history.length)
+            setTimeout(redraw, 1000);
+        else {
+            /*
+              ctx.fillStyle = "#b0b0b0";
+            ctx.textAlign = 'center';
+            ctx.font = 'bold 64px serif';
+            ctx.fillText("The End", c.width / 2 - 30, c.height / 2);
+            */
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+            ctx.fillRect(0, 0, c.width, c.height);
+        }
+    }
+
+    // kick it
+    redraw();
+  </script>
+
+</body>
+</html>
