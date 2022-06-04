@@ -28,16 +28,20 @@
     var yMax = xMax / aspect;
     var airspaceRadius = 6;
 
-    // TODO: draw some fake waypoints
-    // TODO: dont' crash at the end
     // TODO: helicopters
+    // TODO: more random walk sorts of paths for VFR / helicopters
     // TODO: untracked a/c: asterisk
+    // TODO: still getting rings when oneis at eg 040 and the other at
+    //       050--fp issue? log more when rings are being printed.
+    //       compute delta dist based on rounded
+    // TODO: make sure conflict hits a decent number of frames before end
 
     // transform from 'nm space' to pixel coordinates
     function toPixel(p) {
         return [ (p[0] + xMax) / (2 * xMax) * c.width,
                  (p[1] + yMax) / (2 * yMax) * c.height ];
     }
+    // draw an x for the blip trail
     function drawx(p, d, color) {
         p = toPixel(p);
         ctx.beginPath();
@@ -73,20 +77,21 @@
     function rand(low, high) {
         return low + (high - low) * Math.random();
     }
+    // This can actually fail due to floating-point rounding. yolo.
+    function arrayrand(a) { return a[Math.floor(Math.random() * a.length)]; }
 
     function randomPlane() {
-        var plane = { 'dest': destinations[Math.floor(Math.random() * destinations.length)],
+        var plane = { 'dest': arrayrand(destinations),
                       'draw': function() {
                           // draw x and trails
-                          let step = Math.floor(time / 5);
-                          for (let i = step - 5; i < step; ++i) {
-                              drawx(this.history[i], 3, "#00a000");
-                          }
-                          drawx(this.history[step], 3, "#00ff00");
+                          for (let i = -25; i < 0; i += 5)
+                              drawx(this.history[time + i], 3, "#00a000");
+                          drawx(this.history[time], 3, "#00ff00");
 
                           // origin for drawing text. default for
                           var org = [ ];
-                          var heading = this.history[step][4];
+                          var pt = this.history[time];
+                          var heading = pt[4];
                           if (heading >= 45 && heading < 135)
                               org = [ 12, -3 ]; // right
                           else if (heading >= 135 && heading < 225)
@@ -96,7 +101,7 @@
                           else
                               org = [ -5, -30 ]; // above
 
-                          let p = toPixel(this.history[step]);
+                          let p = toPixel(pt);
                           ctx.fillStyle = "#00b000";
                           ctx.fillText(this.callsign, p[0]+org[0], p[1]+org[1]);
 
@@ -104,8 +109,8 @@
                           if (time % 2 == 0) {
                               // altitude / speed
                               let text = ("000" +
-                                          Math.round(this.history[step][2])).slice(-3);
-                              text = text.concat(" ", Math.round(this.history[step][3] / 10).toString());
+                                          Math.round(pt[2])).slice(-3);
+                              text = text.concat(" ", Math.round(pt[3] / 10).toString());
                               if (this.vfr)
                                   text = text.concat("V");
                               ctx.fillText(text, p[0]+org[0], p[1]+org[1]);
@@ -116,10 +121,10 @@
                           }
 
                           // draw conflict circles
-                          if (//inAirspace(this.history[step]) &&
+                          if (//inAirspace(pt) &&
                               allPlanes.some(plane2 => plane2.callsign != plane.callsign &&
-                                             pointConflicts(plane.history[step],
-                                                            plane2.history[step]))) {
+                                             pointConflicts(plane.history[time],
+                                                            plane2.history[time]))) {
                               ctx.beginPath();
                               var r = 3. / (2 * xMax) * window.innerWidth;
                               ctx.arc(p[0], p[1], r, 0, 2 * Math.PI, false);
@@ -135,7 +140,7 @@
         function digit() { return Math.floor(Math.random() * 10).toString(); }
         if (Math.random() < .3) {
             plane.vfr = true;
-            plane.ac = vfraircraft[Math.floor(Math.random() * vfraircraft.length)];
+            plane.ac = arrayrand(vfraircraft);
             speed = rand(80, 150);
             dspeed = rand(-3, 3);
 
@@ -146,45 +151,46 @@
             c = c.concat(digit());
 
             var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-            c = c.concat(chars[Math.floor(Math.random() * chars.length)]);
-            c = c.concat(chars[Math.floor(Math.random() * chars.length)]);
+            c = c.concat(arrayrand(chars), arrayrand(chars));
         } else {
             plane.vfr = false;
             dspeed = rand(-3, 3);
 
-            c = callsigns[Math.floor(Math.random() * callsigns.length)];
+            c = arrayrand(callsigns);
             c = c.concat(digit());
-            if (Math.random() < .85) {
-                c = c.concat(Math.floor(Math.random() * 10).toString());
-                if (Math.random() < .5) {
-                    c = c.concat(Math.floor(Math.random() * 10).toString());
-                    if (Math.random() < .5) {
-                        c = c.concat(Math.floor(Math.random() * 10).toString());
+            if (c.slice(-1) == "0" || Math.random() < .85) {
+                c = c.concat(digit());
+                if (c.slice(-1) == "0" || Math.random() < .5) {
+                    c = c.concat(digit());
+                    if (c.slice(-1) == "0" || Math.random() < .5) {
+                        var d = digit();
+                        if (d == "0") d = "5";
+                        c = c.concat(d);
                     }
                 }
             }
             if (c.length <= 6 && Math.random() < .5) { // don't make 4-digit flight numbers heavy
                 c = c.concat("/H");
-                plane.ac = heavyaircraft[Math.floor(Math.random() *
-                                                    heavyaircraft.length)];
+                plane.ac = arrayrand(heavyaircraft);
                 speed = rand(200, 250);
             } else {
-                plane.ac = aircraft[Math.floor(Math.random() * aircraft.length)];
+                plane.ac = arrayrand(aircraft);
                 speed = rand(140, 250);
             }
         }
         plane.callsign = c;
 
         // Simulate a flight path
-        let altChanging = Math.random() < .25;
-        let altChangeRate = rand(0.1, 2);
+        let altChanging = Math.random() < .35;
+        // altitude in 100s
+        let altChangeRate = rand(10, 30) / 60;
         let alt = 10 * Math.floor(rand(3, 10));
         let altTarget = 10 * Math.floor(rand(3, 10));
 
         let heading = rand(0, 360);
-        let headingTarget = heading + rand(-80, 80);
+        let headingTarget = heading + rand(-180, 180);
         let headingChanging = Math.random() < .5;
-        let headingChangeRate = rand(1, 10);
+        let headingChangeRate = rand(2, 4);
 
         /*
         // Everyone starts outside our airspace
@@ -201,12 +207,21 @@
 
         // x, y, alt, speed
         plane.history = [ pt ];
-        for (let i = 0; i < 30; ++i) {
-            // 5s time step.
-            var dist = speed * 5 / 3600;
+        // 100s total simulation: 25 burn in, then 75..
+        for (let i = 0; i < 100; ++i) {
+            // 1s time step.
+            var dist = speed * 1 / 3600;
             var ang = heading * Math.PI / 180; // to radians
 
             let newspeed = speed + dspeed;
+            if (plane.vfr) {
+                if (newspeed < 80) newspeed = 80;
+                else if (newspeed > 150) newspeed = 150;
+            } else {
+                if (newspeed < 140) newspeed = 140;
+                else if (newspeed > 250) newspeed = 250;
+            }
+
             let newheading = heading;
             if (heading != headingTarget) {
                 if (!headingChanging)
@@ -226,7 +241,7 @@
             let newalt = alt;
             if (alt != altTarget) {
                 if (!altChanging)
-                    altChanging = Math.random() < .05;
+                    altChanging = Math.random() < .015;
                 if (altChanging) {
                     if (alt < altTarget) {
                         newalt = alt + altChangeRate;
@@ -248,20 +263,6 @@
             speed = newspeed;
             heading = newheading;
             alt = newalt;
-
-            if (alt < 5) { alt = 5;
-                           dalt = Math.abs(dalt); }
-            if (plane.vfr) {
-                if (speed < 80) { speed = 80;
-                                  dspeed = Math.abs(dspeed); }
-                else if (speed > 150) { speed = 150;
-                                        dspeed = -Math.abs(dspeed); }
-            } else {
-                if (speed < 140) { speed = 140;
-                                   dspeed = Math.abs(dspeed); }
-                else if (speed > 250) { speed = 250;
-                                        dspeed = -Math.abs(dspeed); }
-            }
         }
 
         return plane;
@@ -285,7 +286,7 @@
                          (a[1]-b[1])*(a[1]-b[1])) < 3;
     }
     function pathConflicts(a, b, start) {
-        for (let i = 5; i < a.history.length; ++i)
+        for (let i = 25; i < a.history.length - 15; ++i)
             if (pointConflicts(a.history[i], b.history[i])) {
                 console.log(i + " @ " + a.history[i] + " " + b.history[i]);
                 return true;
@@ -334,16 +335,16 @@
             continue;
 
         // Want to be at least 1 mile apart at the first time we will draw
-        // (step 5)
-        if (allPlanes.some(p => ((p.history[5][0] - newPlane.history[5][0]) *
-                                 (p.history[5][0] - newPlane.history[5][0])) +
-                                 ((p.history[5][0] - newPlane.history[5][0]) *
-                                  (p.history[5][0] - newPlane.history[5][0])) < 1))
+        // (time 25)
+        if (allPlanes.some(p => ((p.history[25][0] - newPlane.history[25][0]) *
+                                 (p.history[25][0] - newPlane.history[25][0])) +
+                                 ((p.history[25][0] - newPlane.history[25][0]) *
+                                  (p.history[25][0] - newPlane.history[25][0])) < 1))
             continue;
 
-        // Want no conflicts for the first 10 steps
+        // Want no conflicts for the first 30 seconds (5 burn in, 25 for blip history)
         var conflicts = false;
-        for (let i = 0; i < 10; ++i)
+        for (let i = 0; i < 30; ++i)
             if (allPlanes.some(plane => pointConflicts(plane.history[i],
                                                        newPlane.history[i]))) {
                 conflicts = true;
@@ -352,8 +353,8 @@
         if (conflicts)
             continue;
 
-        // Do want a conflict at least 10 steps in
-        for (let i = 10; i < newPlane.history.length; ++i) {
+        // Do want a conflict in the following 45 seconds that
+        for (let i = 30; i < 75; ++i) {
             if (allPlanes.some(plane => pointConflicts(plane.history[i],
                                                        newPlane.history[i]))) {
                 conflicts = true;
@@ -435,7 +436,7 @@
 
         ++time;
 
-        if (Math.floor(time / 5) < allPlanes[0].history.length)
+        if (time < allPlanes[0].history.length)
             setTimeout(redraw, 1000);
         else {
             /*
